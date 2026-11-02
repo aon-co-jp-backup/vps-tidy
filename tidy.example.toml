@@ -1,0 +1,64 @@
+# vps-tidy の設定の例(一般的な内容だけ)。
+# 実際の設定は、サーバーの /etc/vps-tidy/tidy.toml にだけ置く(パスや構成が分かるので、リポジトリには入れない)。
+
+[guard]
+# どの規則に一致しても、絶対に触らないパス(その下と、それを含むフォルダ丸ごとの削除も拒否する)。
+# サイトのデータ、データベースのデータ、鍵・設定、バックアップは、必ずここに書く。
+protected = [
+  "/srv/www",           # 例: サイトのデータ
+  "/var/lib/db-data",   # 例: データベースのデータ
+  "/etc",
+]
+# 1回の実行で消してよい量の上限(GB)。超えた分は、次回に回す。
+max_delete_gb = 30
+# `cargo_slim` で、実行ファイルが deps/debug を指していないか調べる、サービス定義のフォルダ。
+unit_dirs = ["/etc/systemd/system"]
+
+[heavy]
+# このディスク使用率(%)以上のときだけ、heavy = true の規則(強めの整理)を動かす。
+trigger_used_percent = 75
+mountpoint = "/"
+
+[report]
+dir = "/var/log/vps-tidy"
+keep_days = 60
+
+# ---- 規則 -------------------------------------------------------------
+
+# 古い実行ファイルの控え(.bak / .before-*)。新しい 2 個は残し、30日より古いものを消す。
+[[rule]]
+name = "old-binary-backups"
+kind = "old_files"
+globs = ["/srv/app/**/target/release/*.bak-*", "/srv/app/**/target/release/*.before-*"]
+keep_latest = 2
+min_age_days = 30
+
+# 一時ファイル(7日より古いもの)。
+[[rule]]
+name = "old-tmp"
+kind = "old_files"
+globs = ["/tmp/*.log", "/tmp/*.tar.gz"]
+min_age_days = 7
+
+# 古いログの圧縮(14日より古いもの)。
+[[rule]]
+name = "compress-old-logs"
+kind = "compress_logs"
+globs = ["/var/log/messages-*"]
+min_age_days = 14
+
+# キャッシュ(フォルダごと)。
+[[rule]]
+name = "pip-cache"
+kind = "cache_dir"
+globs = ["/root/.cache/pip"]
+min_age_days = 14
+
+# 強めの整理: cargo の target から、中間生成物だけを消す(最終バイナリは残す)。
+# ディスク使用率が trigger_used_percent 以上のときだけ動く。ビルド中や、24時間以内に更新された target は、触らない。
+[[rule]]
+name = "cargo-slim"
+kind = "cargo_slim"
+heavy = true
+globs = ["/srv/app/*/target"]
+untouched_hours = 24

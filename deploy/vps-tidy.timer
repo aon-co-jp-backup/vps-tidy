@@ -1,0 +1,10 @@
+[Unit]
+Description=vps-tidy を毎日実行(日本時間 04:40。他のバックアップ・更新と重ならない時間)
+
+[Timer]
+OnCalendar=*-*-* 04:40:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

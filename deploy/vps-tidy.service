@@ -1,0 +1,11 @@
+[Unit]
+Description=vps-tidy: VPSの無駄なデータを、固定の規則だけで安全に整理する
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vps-tidy --config /etc/vps-tidy/tidy.toml --apply
+# 他のサービスの邪魔にならないよう、最低の優先度で動かす。
+Nice=19
+IOSchedulingClass=idle
+# 万一、動き続けても、2時間で止める。
+TimeoutStartSec=7200
