@@ -368,7 +368,7 @@ impl<'a> Engine<'a> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct Summary {
     pub deleted: usize,
     pub deleted_bytes: u64,

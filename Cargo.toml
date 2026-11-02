@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.80"
 authors = ["石 塚 正 浩（MASAHIRO ISHIZUKA）"]
 license = "MIT OR Apache-2.0"
-description = "VPSの無駄なデータ(古いバイナリの控え・古いログ・キャッシュ・cargoのビルドの中間生成物)を、固定の規則だけで、安全に定期整理する。既定は試し実行。"
+description = "VPS・PCのストレージ(HDD/SSD)を、固定の規則だけで、安全に定期メンテナンスする(無駄なデータの整理・SMARTの健康チェック・TRIM/最適化)。既定は試し実行。"
 readme = "README.md"
 
 [dependencies]
@@ -13,6 +13,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 glob = "0.3"
 anyhow = "1"
+serde_json = "1"
+# JSON は、RS-JSON(上限つきで読む)で読む。方針の正本は RS-JSON の README。
+rust-json = { path = "../RS-JSON" }
 
 [dev-dependencies]
 tempfile = "3"

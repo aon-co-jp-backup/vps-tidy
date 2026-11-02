@@ -1,4 +1,5 @@
-//! vps-tidy: VPSの無駄なデータを、固定の規則だけで、安全に定期整理する。
+//! vps-tidy: VPS・PCのストレージ(HDD/SSD)を、固定の規則だけで、安全に定期メンテナンスする。
+//! 無駄なデータの整理(`engine`・`runner`)、SMART の健康チェック(`health`)、TRIM/最適化(`optimize`)。
 //!
 //! - 既定は**試し実行**(`--apply` を付けたときだけ、実際に消す)。
 //! - 消す対象は、設定の規則だけで決める(AIは使わない)。
@@ -6,5 +7,8 @@
 
 pub mod config;
 pub mod engine;
+pub mod health;
+pub mod optimize;
 pub mod report;
+pub mod runner;
 pub mod sys;
