@@ -84,7 +84,31 @@ impl Default for ReportCfg {
 }
 
 fn default_report_dir() -> PathBuf {
-    PathBuf::from("/var/log/vps-tidy")
+    default_data_dir().join("reports")
+}
+
+/// 設定・報告の置き場の既定(Linux: /etc と /var/log、Windows: %LOCALAPPDATA%ps-tidy)。
+pub fn default_data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("vps-tidy")).unwrap_or_else(|| PathBuf::from("vps-tidy"))
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/var/log/vps-tidy")
+    }
+}
+
+/// 設定ファイルの既定の場所。
+pub fn default_config_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        default_data_dir().join("tidy.toml")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/etc/vps-tidy/tidy.toml")
+    }
 }
 
 fn default_keep_days() -> u64 {
@@ -102,6 +126,9 @@ pub enum Kind {
     CacheDir,
     /// cargo の `target` から、中間生成物だけを消す(最終バイナリは残す)。
     CargoSlim,
+    /// 再生成できるフォルダ(`target`・`node_modules`・`.gradle`・`__pycache__` など)を、フォルダごと消す。
+    /// 「再生成できる」と確認できる目印(`marker_file` / `parent_marker_any`)がある場合だけ。
+    RegenDirs,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -122,6 +149,13 @@ pub struct Rule {
     /// `cargo_slim` で、この時間以内に更新されている `target` は、ビルド中かもしれないので触らない。
     #[serde(default = "default_untouched")]
     pub untouched_hours: f64,
+    /// `regen_dirs`: このファイルが、そのフォルダの**中**にあること(例: `CACHEDIR.TAG`)。
+    #[serde(default)]
+    pub marker_file: Option<String>,
+    /// `regen_dirs`: これらのうち、どれか1つが、そのフォルダの**隣**(親のフォルダ)にあること
+    /// (例: `node_modules` の隣の `package-lock.json`。無いと、元に戻せないかもしれないので、消さない)。
+    #[serde(default)]
+    pub parent_marker_any: Vec<String>,
 }
 
 fn default_untouched() -> f64 {

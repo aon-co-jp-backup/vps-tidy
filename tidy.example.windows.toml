@@ -1,0 +1,44 @@
+# Windows PC 用の設定の例(一般的な内容だけ)。
+# 実際の設定は、%LOCALAPPDATA%\vps-tidy\tidy.toml にだけ置く(パスが分かるので、リポジトリには入れない)。
+# 方針: 「再生成できる」と目印で確認できたものだけ。最近使っているもの(最近ビルドしたもの)は、消さない。
+
+[guard]
+protected = [
+  "D:/backups",                   # 例: バックアップ
+  "C:/Users/me/.ssh",
+  "C:/Users/me/.cargo",
+]
+max_delete_gb = 300
+
+[report]
+keep_days = 90
+
+# cargo の target(CACHEDIR.TAG がある=cargo が作ったもの)。21日以上、ビルドも更新もされていないものだけ。
+[[rule]]
+name = "cargo-target"
+kind = "regen_dirs"
+marker_file = "CACHEDIR.TAG"
+min_age_days = 21
+globs = ["D:/*/target", "D:/*/*/target", "D:/*/*/*/target"]
+
+# node_modules(隣に package-lock.json などがあるもの)。
+[[rule]]
+name = "node-modules"
+kind = "regen_dirs"
+parent_marker_any = ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]
+min_age_days = 30
+globs = ["D:/*/node_modules", "D:/*/*/node_modules"]
+
+# Python の __pycache__。
+[[rule]]
+name = "python-pycache"
+kind = "regen_dirs"
+min_age_days = 7
+globs = ["D:/*/__pycache__", "D:/*/*/__pycache__"]
+
+# ユーザーの一時フォルダの直下のファイル(14日より古いもの)。使用中のものは、Windows が消させない。
+[[rule]]
+name = "user-temp-files"
+kind = "old_files"
+min_age_days = 14
+globs = ["C:/Users/me/AppData/Local/Temp/*"]

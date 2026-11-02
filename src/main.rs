@@ -7,7 +7,7 @@ const HELP: &str = "vps-tidy — VPSの無駄なデータを、固定の規則�
 使い方:
   vps-tidy [--config FILE] [--apply] [--heavy] [--no-report]
 
-  --config FILE   設定ファイル(既定: /etc/vps-tidy/tidy.toml)
+  --config FILE   設定ファイル(既定: Linux は /etc/vps-tidy/tidy.toml、Windows は %LOCALAPPDATA%\\vps-tidy\\tidy.toml)
   --apply         実際に消す。付けなければ、試し実行(何も消さない)
   --heavy         ディスク使用率に関わらず、強めの整理(heavy = true の規則)も動かす
   --no-report     報告ファイルを書かない(画面に出すだけ)
@@ -15,7 +15,7 @@ const HELP: &str = "vps-tidy — VPSの無駄なデータを、固定の規則�
 ";
 
 fn main() -> Result<()> {
-    let mut cfg_path = PathBuf::from("/etc/vps-tidy/tidy.toml");
+    let mut cfg_path: PathBuf = config::default_config_path();
     let (mut apply, mut force_heavy, mut no_report) = (false, false, false);
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {

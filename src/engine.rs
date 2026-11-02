@@ -41,6 +41,51 @@ fn age_days(meta: &fs::Metadata) -> f64 {
     SystemTime::now().duration_since(m).map(|d| d.as_secs_f64() / 86400.0).unwrap_or(0.0)
 }
 
+/// フォルダ自身と、その2階層下までの項目のうち、最も新しい更新からの経過日数。
+/// フォルダの更新時刻は、直下に項目が増減したときしか変わらない。cargo の `target` は、ビルドで
+/// `target/debug/deps` などの中身が変わるので、2階層下(`target/*/*`)まで見ないと、最近のビルドを見逃す。
+pub fn newest_age_days(p: &Path) -> f64 {
+    fn newest(p: &Path, depth: u32, best: &mut SystemTime) {
+        if let Ok(t) = fs::symlink_metadata(p).and_then(|m| m.modified()) {
+            if t > *best {
+                *best = t;
+            }
+        }
+        if depth == 0 {
+            return;
+        }
+        if let Ok(rd) = fs::read_dir(p) {
+            for e in rd.flatten() {
+                newest(&e.path(), depth - 1, best);
+            }
+        }
+    }
+    let mut best = SystemTime::UNIX_EPOCH;
+    newest(p, 2, &mut best);
+    SystemTime::now().duration_since(best).map(|d| d.as_secs_f64() / 86400.0).unwrap_or(0.0)
+}
+
+/// Windows: 開いているファイルを一覧できないので、消す前に、フォルダの名前を変えられるか(=中で使われていないか)で確かめる。
+/// Linux では、`open_paths` で確かめているので、常に true。
+#[cfg(windows)]
+fn not_locked(path: &Path) -> bool {
+    if !path.is_dir() {
+        return true;
+    }
+    let mut probe = path.as_os_str().to_owned();
+    probe.push(".vps-tidy-probe");
+    let probe = PathBuf::from(probe);
+    if fs::rename(path, &probe).is_err() {
+        return false;
+    }
+    fs::rename(&probe, path).is_ok()
+}
+
+#[cfg(not(windows))]
+fn not_locked(_path: &Path) -> bool {
+    true
+}
+
 /// フォルダの大きさ(バイト)。シンボリックリンクはたどらない。
 pub fn dir_size(p: &Path) -> u64 {
     let Ok(meta) = fs::symlink_metadata(p) else { return 0 };
@@ -115,7 +160,7 @@ impl<'a> Engine<'a> {
             self.skip(rule, path, note);
             return;
         }
-        if self.in_use(path) {
+        if self.in_use(path) || !not_locked(path) {
             self.skip(rule, path, "使用中(プロセスが開いている)");
             return;
         }
@@ -154,6 +199,7 @@ impl<'a> Engine<'a> {
                 Kind::CompressLogs => self.compress_logs(r),
                 Kind::CacheDir => self.cache_dir(r),
                 Kind::CargoSlim => self.cargo_slim(r),
+                Kind::RegenDirs => self.regen_dirs(r),
             }
         }
     }
@@ -223,6 +269,39 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// 再生成できるフォルダ(`target`・`node_modules`・`.gradle`・`__pycache__` など)を、フォルダごと消す。
+    /// 「再生成できる」と確認できる目印がある場合だけ。最近更新されたもの(`min_age_days` 以内)は、触らない。
+    fn regen_dirs(&mut self, r: &Rule) {
+        for d in expand(&r.globs) {
+            let Ok(meta) = fs::symlink_metadata(&d) else { continue };
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                continue;
+            }
+            if let Some(m) = &r.marker_file {
+                if !d.join(m).exists() {
+                    self.skip(&r.name, &d, format!("目印のファイル({m})が無い"));
+                    continue;
+                }
+            }
+            if !r.parent_marker_any.is_empty() {
+                let ok = d.parent().is_some_and(|p| r.parent_marker_any.iter().any(|f| p.join(f).exists()));
+                if !ok {
+                    self.skip(&r.name, &d, format!("隣に {} のどれも無い(元に戻せるか分からない)", r.parent_marker_any.join(" / ")));
+                    continue;
+                }
+            }
+            if r.marker_file.as_deref() == Some("CACHEDIR.TAG") && self.build_running {
+                self.skip(&r.name, &d, "cargo/rustc が動いている(ビルド中かもしれない)");
+                continue;
+            }
+            if newest_age_days(&d) < r.min_age_days {
+                continue; // 最近使っている。報告も増やさない
+            }
+            let size = dir_size(&d);
+            self.remove(&r.name, &d, size);
+        }
+    }
+
     fn cargo_slim(&mut self, r: &Rule) {
         for t in expand(&r.globs) {
             if !t.is_dir() {
@@ -245,7 +324,7 @@ impl<'a> Engine<'a> {
                 continue;
             }
             // 4) 最近、更新されていない
-            let fresh = [&t, &release].iter().filter_map(|d| fs::metadata(d).ok()).any(|m| age_days(&m) * 24.0 < r.untouched_hours);
+            let fresh = [t.clone(), release.clone(), t.join("debug")].iter().filter(|d| d.is_dir()).any(|d| newest_age_days(d) * 24.0 < r.untouched_hours);
             if fresh {
                 self.skip(&r.name, &t, format!("{} 時間以内に更新されている", r.untouched_hours));
                 continue;
@@ -304,6 +383,7 @@ pub struct Summary {
 mod tests {
     use super::*;
     use crate::config::{Config, Guard, Kind, Rule};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn write(p: &Path, bytes: usize) {
@@ -311,14 +391,22 @@ mod tests {
         fs::write(p, vec![b'x'; bytes]).unwrap();
     }
 
+    /// 更新時刻を、`days` 日前にする。Windows では、フォルダを開くのに `FILE_FLAG_BACKUP_SEMANTICS` が要る。
     fn set_old(p: &Path, days: u64) {
         let t = SystemTime::now() - std::time::Duration::from_secs(days * 86400);
+        #[cfg(windows)]
+        let f = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(p).unwrap()
+        };
+        #[cfg(not(windows))]
         let f = fs::OpenOptions::new().write(true).open(p).or_else(|_| fs::File::open(p)).unwrap();
         f.set_modified(t).unwrap();
     }
 
     fn rule(name: &str, kind: Kind, glob: &str) -> Rule {
-        Rule { name: name.into(), kind, heavy: false, globs: vec![glob.into()], min_age_days: 0.0, keep_latest: 0, untouched_hours: 0.0 }
+        Rule { name: name.into(), kind, heavy: false, globs: vec![glob.into()], min_age_days: 0.0, keep_latest: 0, untouched_hours: 0.0, marker_file: None, parent_marker_any: vec![] }
     }
 
     #[test]
@@ -402,6 +490,7 @@ mod tests {
         assert_eq!(s.skipped, 2);
     }
 
+    #[cfg(unix)]
     fn fake_target(root: &Path) -> PathBuf {
         let t = root.join("svc/target");
         write(&t.join("CACHEDIR.TAG"), 1);
@@ -414,6 +503,7 @@ mod tests {
         t
     }
 
+    #[cfg(unix)]
     #[test]
     fn cargo_slim_removes_intermediates_but_keeps_the_final_binary() {
         let d = tempfile::tempdir().unwrap();
@@ -429,6 +519,7 @@ mod tests {
         assert!(!t.join("debug").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn cargo_slim_refuses_without_the_cachedir_tag_or_a_binary() {
         let d = tempfile::tempdir().unwrap();
@@ -446,6 +537,7 @@ mod tests {
         assert!(t.join("release/deps").exists(), "最終バイナリが無ければ(消すと何も残らないので)触らない");
     }
 
+    #[cfg(unix)]
     #[test]
     fn cargo_slim_refuses_while_a_build_runs_or_a_unit_points_into_deps() {
         let d = tempfile::tempdir().unwrap();
@@ -462,6 +554,7 @@ mod tests {
         assert!(t.join("release/deps").exists(), "サービスが deps から動くなら触らない");
     }
 
+    #[cfg(unix)]
     #[test]
     fn heavy_rules_wait_for_a_high_disk_usage() {
         let d = tempfile::tempdir().unwrap();
@@ -475,6 +568,62 @@ mod tests {
         let mut e = Engine::for_test(&cfg, true, true);
         e.run();
         assert!(!t.join("release/deps").exists());
+    }
+
+    fn regen_rule(glob: &str) -> Rule {
+        let mut r = rule("nm", Kind::RegenDirs, glob);
+        r.parent_marker_any = vec!["package-lock.json".into(), "yarn.lock".into()];
+        r.min_age_days = 30.0;
+        r
+    }
+
+    #[test]
+    fn regen_dirs_needs_a_lockfile_next_to_node_modules() {
+        let d = tempfile::tempdir().unwrap();
+        write(&d.path().join("a/package.json"), 1);
+        write(&d.path().join("a/node_modules/x/index.js"), 10);
+        for p in ["a/node_modules/x/index.js", "a/node_modules/x", "a/node_modules"] {
+            set_old(&d.path().join(p), 90);
+        }
+        let cfg = Config { rules: vec![regen_rule(&format!("{}/*/node_modules", d.path().display()))], ..Default::default() };
+        let mut e = Engine::for_test(&cfg, true, false);
+        e.run();
+        assert!(d.path().join("a/node_modules").exists(), "ロックファイルが無ければ、元に戻せるか分からないので、消さない");
+        write(&d.path().join("a/package-lock.json"), 1);
+        let mut e = Engine::for_test(&cfg, true, false);
+        e.run();
+        assert!(!d.path().join("a/node_modules").exists(), "ロックファイルがあり、90日使われていなければ、消す");
+        assert!(d.path().join("a/package.json").exists(), "隣のファイルには、触らない");
+    }
+
+    #[test]
+    fn regen_dirs_leaves_recently_used_folders_alone() {
+        let d = tempfile::tempdir().unwrap();
+        write(&d.path().join("a/package-lock.json"), 1);
+        write(&d.path().join("a/node_modules/x/index.js"), 10); // 今作った=最近使っている
+        let cfg = Config { rules: vec![regen_rule(&format!("{}/*/node_modules", d.path().display()))], ..Default::default() };
+        let mut e = Engine::for_test(&cfg, true, false);
+        e.run();
+        assert!(d.path().join("a/node_modules").exists());
+    }
+
+    #[test]
+    fn regen_dirs_with_a_marker_file_only_touches_marked_folders() {
+        let d = tempfile::tempdir().unwrap();
+        write(&d.path().join("p/target/CACHEDIR.TAG"), 1);
+        write(&d.path().join("p/target/debug/a"), 10);
+        write(&d.path().join("q/target/debug/a"), 10); // CACHEDIR.TAG が無い=cargo の target と確認できない
+        for p in ["p/target/CACHEDIR.TAG", "p/target/debug/a", "p/target/debug", "p/target", "q/target/debug/a", "q/target/debug", "q/target"] {
+            set_old(&d.path().join(p), 90);
+        }
+        let mut r = rule("t", Kind::RegenDirs, &format!("{}/*/target", d.path().display()));
+        r.marker_file = Some("CACHEDIR.TAG".into());
+        r.min_age_days = 30.0;
+        let cfg = Config { rules: vec![r], ..Default::default() };
+        let mut e = Engine::for_test(&cfg, true, false);
+        e.run();
+        assert!(!d.path().join("p/target").exists());
+        assert!(d.path().join("q/target").exists(), "目印が無ければ、触らない");
     }
 
     #[test]
