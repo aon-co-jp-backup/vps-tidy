@@ -13,5 +13,10 @@ jobs:
     continue-on-error: ${{ matrix.os == 'windows-11-arm' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling path dependency (RS-JSON)
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          [ -d ../RS-JSON ] || git clone --depth=1 https://github.com/aon-co-jp/RS-JSON.git ../RS-JSON
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked
